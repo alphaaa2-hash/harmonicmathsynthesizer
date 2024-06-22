@@ -169,3 +169,9 @@ function visualize(frequencies) {
     }
 }
 
+const presetSelect = document.getElementById('presets');
+
+presetSelect.addEventListener('change', function() {
+    equationInput.value = this.value;
+});
+
