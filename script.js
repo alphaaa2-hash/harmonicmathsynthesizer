@@ -1,9 +1,7 @@
-// Set up audio context
 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 let oscillators = null;
 let gainNodes = null;
 
-// Get DOM elements
 const equationInput = document.getElementById('equation');
 const playButton = document.getElementById('play');
 const stopButton = document.getElementById('stop');
@@ -12,42 +10,38 @@ const waveformSelect = document.getElementById('waveform');
 const canvas = document.getElementById('visualizer');
 const canvasCtx = canvas.getContext('2d');
 
-// Add event listeners
 playButton.addEventListener('click', playSound);
 stopButton.addEventListener('click', stopSound);
 
-// Function to play sound
-function playSound() {
-    // We'll implement this later
-    console.log('Play button clicked');
-}
-
-// Function to stop sound
-function stopSound() {
-    // We'll implement this later
-    console.log('Stop button clicked');
-}
-
-
 function generateFrequencies(equation, duration) {
     const frequencies = [];
-    const steps = 100;
+    const steps = 1000; // Increased for smoother sound
     
     for (let i = 0; i <= steps; i++) {
-        const x = i / steps;
-        const time = x * duration;
+        const x = (i / steps) * 10; // Scale x from 0 to 10 for more interesting results
+        const time = (i / steps) * duration;
         try {
-            let results = math.evaluate(equation, { x });
-            if (!Array.isArray(results)) {
-                results = [results];
+            let result = math.evaluate(equation, { x });
+            
+            // Handle complex numbers
+            if (math.typeOf(result) === 'Complex') {
+                result = math.abs(result);
             }
-            const freqs = results.map(result => {
-                if (isNaN(result)) {
-                    throw new Error("Invalid result: NaN");
-                }
-                return Math.abs(result) * 100 + 100; // Scale the result to audible frequencies
-            });
-            frequencies.push({ time, freqs });
+            
+            // Handle arrays or matrices
+            if (Array.isArray(result) || math.typeOf(result) === 'Matrix') {
+                result = math.mean(result);
+            }
+            
+            // Ensure result is a number
+            if (typeof result !== 'number') {
+                throw new Error("Result is not a number");
+            }
+            
+            // Map to audible frequencies (20 Hz to 20000 Hz)
+            const freq = math.map(result, -10, 10, 20, 20000);
+            
+            frequencies.push({ time, freq });
         } catch (error) {
             console.error('Error evaluating equation:', error);
             alert(`Error in equation: ${error.message}`);
@@ -57,7 +51,6 @@ function generateFrequencies(equation, duration) {
     
     return frequencies;
 }
-
 
 function playSound() {
     stopSound();
@@ -69,51 +62,58 @@ function playSound() {
     const frequencies = generateFrequencies(equation, duration);
     const now = audioContext.currentTime;
     
-    const maxOscillators = Math.max(...frequencies.map(f => f.freqs.length));
-    oscillators = [];
-    gainNodes = [];
+    // Create a master gain node for overall volume control
+    const masterGain = audioContext.createGain();
+    masterGain.gain.setValueAtTime(0.5, now);
+    masterGain.connect(audioContext.destination);
     
-    for (let i = 0; i < maxOscillators; i++) {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        oscillator.type = waveform;
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        gainNode.gain.setValueAtTime(1 / maxOscillators, now);
-        
-        frequencies.forEach(({ time, freqs }) => {
-            if (i < freqs.length) {
-                oscillator.frequency.setValueAtTime(freqs[i], now + time);
-            } else {
-                oscillator.frequency.setValueAtTime(0, now + time);
-            }
-        });
-        
-        oscillator.start();
-        oscillator.stop(now + duration);
-        
-        oscillators.push(oscillator);
-        gainNodes.push(gainNode);
-    }
+    // Create a low-pass filter for smoother sound
+    const filter = audioContext.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(5000, now);
+    filter.Q.setValueAtTime(1, now);
+    filter.connect(masterGain);
+    
+    // Create a compressor to even out volume
+    const compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.setValueAtTime(-50, now);
+    compressor.knee.setValueAtTime(40, now);
+    compressor.ratio.setValueAtTime(12, now);
+    compressor.attack.setValueAtTime(0, now);
+    compressor.release.setValueAtTime(0.25, now);
+    compressor.connect(filter);
+    
+    oscillator = audioContext.createOscillator();
+    gainNode = audioContext.createGain();
+    
+    oscillator.type = waveform;
+    oscillator.connect(gainNode);
+    gainNode.connect(compressor);
+    
+    // Smoother attack and release
+    gainNode.gain.setValueAtTime(0, now);
+    gainNode.gain.linearRampToValueAtTime(1, now + 0.1);
+    gainNode.gain.linearRampToValueAtTime(0, now + duration - 0.1);
+    
+    frequencies.forEach(({ time, freq }) => {
+        oscillator.frequency.setValueAtTime(freq, now + time);
+    });
+    
+    oscillator.start(now);
+    oscillator.stop(now + duration);
     
     visualize(frequencies);
 }
 
 function stopSound() {
-    if (oscillators) {
-        oscillators.forEach(osc => {
-            osc.stop();
-            osc.disconnect();
-        });
-        oscillators = null;
+    if (oscillator) {
+        oscillator.stop();
+        oscillator.disconnect();
+        oscillator = null;
     }
-    if (gainNodes) {
-        gainNodes.forEach(gain => {
-            gain.disconnect();
-        });
-        gainNodes = null;
+    if (gainNode) {
+        gainNode.disconnect();
+        gainNode = null;
     }
 }
 
@@ -122,56 +122,26 @@ function visualize(frequencies) {
     const height = canvas.height;
     
     canvasCtx.clearRect(0, 0, width, height);
+    canvasCtx.strokeStyle = '#4CAF50';
+    canvasCtx.lineWidth = 2;
     
-    const colors = ['#4CAF50', '#2196F3', '#FFC107', '#E91E63'];
-    
-    const maxSolutions = Math.max(...frequencies.map(f => f.freqs.length));
-    
-    for (let i = 0; i < maxSolutions; i++) {
-        canvasCtx.strokeStyle = colors[i % colors.length];
-        canvasCtx.lineWidth = 2;
-        canvasCtx.beginPath();
-        
-        frequencies.forEach(({ time, freqs }, index) => {
-            const x = (time / frequencies[frequencies.length - 1].time) * width;
-            const y = height - (freqs[i] ? (freqs[i] / 1000) * height : height);
-            
-            if (index === 0) {
-                canvasCtx.moveTo(x, y);
-            } else {
-                canvasCtx.lineTo(x, y);
-            }
-        });
-        
-        canvasCtx.stroke();
-    }
-
-    // Add frequency labels
-    canvasCtx.fillStyle = '#333';
-    canvasCtx.font = '12px Arial';
-    for (let i = 0; i < maxSolutions; i++) {
-        const lastFreq = frequencies[frequencies.length - 1].freqs[i];
-        if (lastFreq) {
-            canvasCtx.fillText(`${Math.round(lastFreq)} Hz`, width - 50, height - (lastFreq / 1000) * height - 5);
-        }
-    }
-
-    // Add time axis
-    canvasCtx.strokeStyle = '#999';
     canvasCtx.beginPath();
-    canvasCtx.moveTo(0, height);
-    canvasCtx.lineTo(width, height);
+    frequencies.forEach(({ time, freq }, index) => {
+        const x = (time / frequencies[frequencies.length - 1].time) * width;
+        const y = height - (freq / 20000) * height;
+        
+        if (index === 0) {
+            canvasCtx.moveTo(x, y);
+        } else {
+            canvasCtx.lineTo(x, y);
+        }
+    });
     canvasCtx.stroke();
-
-    for (let i = 0; i <= 5; i++) {
-        const x = (i / 5) * width;
-        canvasCtx.fillText(`${i}s`, x, height - 5);
-    }
+    
+    // Add frequency labels
+    canvasCtx.fillStyle = '#ffffff';
+    canvasCtx.font = '12px Arial';
+    canvasCtx.fillText(`${Math.round(frequencies[0].freq)} Hz`, 10, height - 10);
+    canvasCtx.fillText(`${Math.round(frequencies[frequencies.length - 1].freq)} Hz`, width - 60, height - 10);
 }
-
-const presetSelect = document.getElementById('presets');
-
-presetSelect.addEventListener('change', function() {
-    equationInput.value = this.value;
-});
 
